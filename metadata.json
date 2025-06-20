@@ -1,0 +1,6 @@
+{
+  "name": "小雅老師英文學習機器人",
+  "description": "一個由小雅老師帶領的互動式英文單字學習應用程式，使用 Gemini API 為國中小學生提供有趣且充滿鼓勵的學習體驗。",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
