@@ -1,117 +1,143 @@
+// services/geminiService.ts
+//--------------------------------------------------
+// 依賴：pnpm add @google/generative-ai
+// 參考文件：https://ai.google.dev/tutorials
+//--------------------------------------------------
 
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
-import { GEMINI_MODEL_TEXT } from '../constants';
-import { GeminiTeachingDetails, GeminiFeedback } from '../types';
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-
-if (!API_KEY) {
-  console.warn("API_KEY environment variable is not set. Gemini API calls will fail.");
+//--------------------------------------------------
+// 型別（若已在其他檔案宣告，移除重複即可）
+//--------------------------------------------------
+export interface GeminiTeachingDetails {
+  partOfSpeech: string;
+  exampleSentence: string;
+  explanation: string;
 }
 
-const ai = new GoogleGenAI({ apiKey: API_KEY || "DUMMY_KEY_FOR_INITIALIZATION" });
-
-function sanitizeJsonString(jsonStr: string): string {
-  let cleanStr = jsonStr.trim();
-  const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
-  const match = cleanStr.match(fenceRegex);
-  if (match && match[2]) {
-    cleanStr = match[2].trim();
-  }
-  return cleanStr;
+export interface GeminiFeedback {
+  score: string;
+  advice: string;
 }
 
-export async function generateWordTeachingDetails(word: string, chineseMeaning: string): Promise<GeminiTeachingDetails> {
-  if (!API_KEY) throw new Error("API_KEY is not configured for Gemini Service.");
-  
-  const prompt = `You are 小雅老師, a friendly, humorous, and encouraging English teacher for Taiwanese elementary and middle school students (CEFR A1-A2).
-Your task is to provide information for the English word: "${word}" which means "${chineseMeaning}".
-Please provide the following in JSON format:
+//--------------------------------------------------
+// 工具：清理 LLM 可能包在 ```json 區塊的回傳
+//--------------------------------------------------
+function sanitizeJsonString(raw: string): string {
+  return raw.replace(/```json|```/g, "").trim();
+}
+
+//--------------------------------------------------
+// 讀取 API Key
+//--------------------------------------------------
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY ?? "";
+
+if (!apiKey) {
+  console.warn(
+    "⚠️ VITE_GEMINI_API_KEY is missing. Gemini API calls will fail."
+  );
+}
+
+// Google 官方 SDK
+const genAI = new GoogleGenerativeAI(apiKey);
+
+//--------------------------------------------------
+// 函式 1：產生單字教學細節
+//--------------------------------------------------
+export async function generateWordTeachingDetails(
+  word: string,
+  chineseMeaning: string
+): Promise<GeminiTeachingDetails> {
+  if (!apiKey) throw new Error("Gemini API key missing.");
+
+  // 取得指定模型
+  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+  // 呼叫生成
+  // 呼叫生成（已去掉 role / parts）
+const result = await model.generateContent([
+  {
+    text: `請用 JSON 格式回覆：
 {
-  "partOfSpeech": "n. / v. / adj. / adv. / prep. / conj. / pron. / interj.",
-  "exampleSentence": "A simple, life-oriented English sentence, max 12 words, using the word '${word}'. Include the word itself.",
-  "exampleSentenceTranslation": "Chinese translation of the example sentence.",
-  "challengePrompt": "A fun and encouraging question or sentence-making prompt for the student using the word '${word}'. Be creative and engaging. For example, if the word is 'happy', you could ask '什麼事情會讓你感到 happy 呢？分享一下吧！'"
+  "partOfSpeech": "...",
+  "exampleSentence": "...",
+  "explanation": "..."
+}
+單字：${word}，中文：${chineseMeaning}`,
+  },
+]);
+
+
+  const response = result.response;
+
+  // ---------- 安全檢查 ----------
+  if (!response || typeof response.text !== "function") {
+    throw new Error("Gemini 回傳異常：response undefined.");
+  }
+
+  const rawJson = await response.text();
+  if (typeof rawJson !== "string") {
+    throw new Error("Gemini 回傳不是字串。");
+  }
+
+  const sanitized = sanitizeJsonString(rawJson);
+  const parsed = JSON.parse(sanitized) as Partial<GeminiTeachingDetails>;
+
+  if (
+    !parsed.partOfSpeech ||
+    !parsed.exampleSentence ||
+    !parsed.explanation
+  ) {
+    console.error("Gemini 回傳缺少欄位：", parsed);
+    throw new Error("Gemini 回傳缺少必要欄位。");
+  }
+
+  return {
+    partOfSpeech: parsed.partOfSpeech,
+    exampleSentence: parsed.exampleSentence,
+    explanation: parsed.explanation,
+  };
 }
 
-Maintain a 活潑 (lively), 有趣 (interesting), and 鼓勵 (encouraging) tone. Sentences should not be too long. Ensure the example sentence correctly uses the word "${word}".`;
+//--------------------------------------------------
+// 函式 2：評分學生造句
+//--------------------------------------------------
+export async function evaluateStudentResponse(
+  wordLearned: string,
+  studentSentence: string
+): Promise<GeminiFeedback> {
+  if (!apiKey) throw new Error("Gemini API key missing.");
 
-  try {
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: GEMINI_MODEL_TEXT,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        temperature: 0.7,
-      }
-    });
-    
-    const rawJson = response.text;
-    const sanitizedJson = sanitizeJsonString(rawJson);
-    const parsedData = JSON.parse(sanitizedJson) as GeminiTeachingDetails;
-    
-    if (!parsedData.partOfSpeech || !parsedData.exampleSentence || !parsedData.exampleSentenceTranslation || !parsedData.challengePrompt) {
-        console.error("Gemini response missing fields:", parsedData);
-        throw new Error("Gemini response missing required fields.");
-    }
-    if (!parsedData.exampleSentence.toLowerCase().includes(word.toLowerCase())) {
-        console.warn(`Gemini's example sentence for "${word}" ("${parsedData.exampleSentence}") might not contain the word as expected.`);
-    }
+  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-    return parsedData;
-
-  } catch (error) {
-    console.error("Error generating word teaching details for '"+word+"':", error);
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    if (errorMessage.includes("API key not valid")) {
-       throw new Error("Gemini API key is not valid. Please check your configuration.");
-    }
-    throw new Error(`小雅老師的魔法水晶球好像有點秀逗了，無法取得「${word}」的詳細資料耶！`);
-  }
+  // 呼叫生成（evaluateStudentResponse）
+const result = await model.generateContent([
+  {
+    text: `請以 JSON 格式回覆：
+{
+  "score": number (1~5),
+  "advice": "..."
 }
+單字：${wordLearned}
+學生句子：${studentSentence}`,
+  },
+]);
 
-export async function evaluateStudentResponse(wordLearned: string, studentResponse: string): Promise<GeminiFeedback> {
-  if (!API_KEY) throw new Error("API_KEY is not configured for Gemini Service.");
 
-  const prompt = `You are 小雅老師, a friendly, humorous, and encouraging English teacher for Taiwanese elementary and middle school students (CEFR A1-A2).
-The student was learning the word "${wordLearned}" and attempted this: "${studentResponse}".
+  const response = result.response;
 
-Please provide feedback as a JSON object with a single key "feedbackText".
-Example response: {"feedbackText": "哇！你的句子「${studentResponse}」非常棒！完全正確喔！🍎 你真是個語言小天才！" }
-
-1. Start with strong positive affirmation (e.g., "太棒了！", "哇！你太厲害了！").
-2. If the response is relevant and correct (even if simple, like "I like ${wordLearned}"), praise them.
-3. If there are minor errors (common for A1-A2 learners like verb conjugation, plurals, articles, or slight misuse of "${wordLearned}"), gently correct it with a brief explanation. For example: "「${studentResponse}」很棒的嘗試喔！小提醒：...可以改成...會更棒！"
-4. If the student says "✔️ 完成", "ok", "next", or similar indicating they want to skip the challenge, acknowledge it positively like "收到！看來你已經準備好迎接下一個挑戰了！很棒喔！👍"
-5. End with more encouragement (e.g., "你真是個語言小天才！", "繼續加油，你超棒的！💪").
-Maintain a 活潑 (lively), 有趣 (interesting), and 鼓勵 (encouraging) tone. Your entire feedback should be within the "feedbackText" string. Keep it concise.`;
-
-  try {
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: GEMINI_MODEL_TEXT,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        temperature: 0.5,
-      }
-    });
-
-    const rawJson = response.text;
-    const sanitizedJson = sanitizeJsonString(rawJson);
-    const parsedData = JSON.parse(sanitizedJson) as GeminiFeedback;
-
-    if (!parsedData.feedbackText) {
-        console.error("Gemini feedback response missing 'feedbackText':", parsedData);
-        throw new Error("Gemini feedback response missing 'feedbackText' field.");
-    }
-    return parsedData;
-
-  } catch (error) {
-    console.error("Error evaluating student response for '"+wordLearned+"':", error);
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-     if (errorMessage.includes("API key not valid")) {
-       throw new Error("Gemini API key is not valid. Please check your configuration.");
-    }
-    throw new Error(`小雅老師的魔法水晶球好像有點秀逗了，無法給出評價耶！`);
+  if (!response || typeof response.text !== "function") {
+    throw new Error("Gemini 回傳異常：response undefined.");
   }
+
+  const rawJson = await response.text();
+  const sanitized = sanitizeJsonString(rawJson);
+
+  // score 可能是字串或數字，因此用 Partial + 強制轉字串
+  const parsed = JSON.parse(sanitized) as Partial<GeminiFeedback>;
+
+  return {
+    score: String(parsed.score ?? "").trim() || "0",
+    advice: parsed.advice ?? "No advice.",
+  };
 }
